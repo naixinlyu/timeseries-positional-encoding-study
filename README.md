@@ -46,8 +46,10 @@ With PE added before the Q, K, V projections:
 
 **Permutation test supports this empirically**: shuffle input → reorder output → compare with original.
 - No PE: difference ~1e-6 (equivariant, as expected)
-- Sinusoidal PE: difference ~0.7 (position-dependent)
+- Sinusoidal PE: difference ~0.6–0.8 (strongly position-dependent)
 - Learnable PE: difference ~0.1 (weaker, needs training time)
+
+> "Difference" is computed per sample as the maximum absolute element-wise deviation between the original output and the permuted-then-unpermuted output, and then averaged over 10 randomly selected test samples (a lightweight sanity check; results are consistent across seeds).
 
 ---
 
@@ -97,6 +99,8 @@ Three distinct regimes:
 
 ## Analysis
 
+Visualizations below are from the run with model seed 42.
+
 ### Attention Patterns
 
 ![Attention Comparison](results/run_seed42/visualizations/attention_comparison.png)
@@ -105,7 +109,7 @@ The attention heatmaps (first layer, first head) provide a qualitative illustrat
 
 **Sinusoidal PE (left)**: Complex structured patterns with diagonal bands. The model appears to attend to specific relative positions; the structured bands suggest it is capturing lagged/periodic dependencies rather than treating all positions as interchangeable. Attention weights are distributed across many positions.
 
-**Learnable PE (middle)**: Similar structure but noisier. The learned position embeddings haven't fully converged to optimal values in 30 epochs. Some periodic patterns are emerging but less pronounced.
+**Learnable PE (middle)**: Similar structure but noisier. The learned position embeddings haven't fully converged to optimal values in 30 epochs. Some structure is visible, but it is less pronounced and appears noisier than the sinusoidal PE case.
 
 **No PE (right)**: Nearly uniform attention (~0.01 everywhere) with one prominent vertical stripe. Without position information, the model cannot distinguish positions and tends to rely on content-only cues, often producing more position-agnostic attention. The vertical stripe suggests many queries focus on the same token/content feature regardless of their own positions.
 
@@ -153,7 +157,7 @@ Reconstruction MSE distributions for normal (blue) vs anomaly (red) points:
 
 The following hyperparameters determine how effectively PE breaks permutation symmetry:
 
-- **d_model=64**: Sinusoidal PE uses multiple frequencies across dimensions. The fastest component changes with period ~`2π ≈ 6.28` steps, while the slowest varies much more slowly (for `d_model=64`, the slowest pair corresponds roughly to a scale `10000^(62/64) ≈ 7.5e3`, i.e., period ~`2π·7.5e3 ≈ 4.7e4` steps). This **multi-scale** signal gives each position a distinct signature. For our `window_size=100`, higher-frequency dimensions vary clearly within the window while lower-frequency dimensions change only slightly; together the multi-scale components still make positions distinguishable.
+- **d_model=64**: Sinusoidal PE spans multiple frequencies across dimensions, creating a multi-scale positional signal. Higher-frequency dimensions help distinguish nearby positions, while lower-frequency dimensions provide slowly varying global context; together they make positions identifiable and enable learning position-dependent dependencies.
 
 - **n_heads=4**: Each attention head can specialize in different position-dependent patterns. For example, one head might focus on short-range local context, while another specializes in longer-range or periodic offsets (i.e., specific relative lags). More heads = more diverse position relationships.
 
