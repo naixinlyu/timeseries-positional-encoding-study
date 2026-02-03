@@ -105,7 +105,7 @@ The attention heatmaps (first layer, first head) reveal how each model processes
 
 **Learnable PE (middle)**: Similar structure but noisier. The learned position embeddings haven't fully converged to optimal values in 30 epochs. Some periodic patterns are emerging but less pronounced.
 
-**No PE (right)**: Nearly uniform attention (~0.01 everywhere) with one isolated spike. In our runs, without position information, the model cannot distinguish positions and defaults to attending everywhere equally. The single dark spot indicates pure content-based attention to an outlier value.
+**No PE (right)**: Nearly uniform attention (~0.01 everywhere) with one prominent vertical stripe. Without position information, the model cannot distinguish positions and defaults to attending everywhere equally. The vertical stripe (around key position 60-70) indicates pure content-based attention—all queries attend to the same outlier value, regardless of their own positions.
 
 ### Positional Encoding Visualization
 
