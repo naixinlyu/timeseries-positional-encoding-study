@@ -129,7 +129,7 @@ Key observations:
 - **Learnable PE** shows a "bump" around epoch 5-10 as it learns position representations
 - **No PE** has highest validation loss plateau - it cannot fully reconstruct position-dependent patterns
 
-Best epochs: Sinusoidal (21), Learnable (13), No PE (24). Learnable PE's early stopping suggests it overfits once PE is learned.
+Best epochs: Sinusoidal (21), Learnable (13), No PE (24). Learnable PE's early stopping at epoch 13 (vs. 21/24 for others) may indicate faster convergence followed by overfitting, possibly because the model has additional learnable parameters (the PE embeddings).
 
 ### Score Distributions
 
