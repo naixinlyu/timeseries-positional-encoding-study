@@ -12,12 +12,14 @@ Self-attention with sinusoidal PE achieves ~16% higher F1 than without PE (0.345
 
 ## Approach
 
-I built a transformer-based autoencoder for anomaly detection. The model reconstructs input sequences; reconstruction error = anomaly score.
+I built a transformer-based autoencoder for anomaly detection. The model reconstructs input sequences; reconstruction error = anomaly score. Anomaly detection via reconstruction is chosen because it naturally reveals whether the model understands position-dependent patterns—contextual anomalies can only be detected if the model knows "what value should appear at this position."
 
-Three variants are trained on identical data:
+**Core comparison (as requested):**
 1. **Sinusoidal PE** - fixed sin/cos encoding (Vaswani et al. 2017)
-2. **Learnable PE** - trainable position embeddings (like BERT/GPT)
-3. **No PE** - baseline without position information
+2. **No PE** - baseline without position information
+
+**Additional variant (for deeper analysis):**
+3. **Learnable PE** - trainable position embeddings, included to show why fixed PE outperforms learned PE in short training runs
 
 ## Why Outputs Differ: The Key Insight
 
@@ -32,24 +34,20 @@ $$PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{model}})$$
 
 Without any positional signal, vanilla self-attention is **permutation equivariant**: shuffle the input → the output shuffles the same way. That means the model cannot distinguish position 5 from position 50.
 
-> Note: This holds for vanilla attention with **no PE**, **no masks**, and **no relative-position bias** (and evaluated with dropout off).
+> Note: The permutation-equivariance statement holds for vanilla self-attention only when the model has no positional signal (no absolute PE, no relative-position bias), uses no causal/temporal mask, and is evaluated deterministically (e.g., `model.eval()` so dropout is off).  
+> Under these conditions, permuting the input tokens permutes the outputs in the same way, so the model cannot inherently distinguish position 5 from position 50.
+
 
 
 With PE added before the Q, K, V projections:
 - Each position gets a unique signature
 - Attention scores `QK^T` now encode position relationships
-- The model learns "value at t depends on value at t-24" (e.g., daily patterns)
+- The model can learn position-dependent dependencies such as lagged or periodic relationships (e.g., "current value depends on values at specific offsets").
 
-**Permutation test proves this**: shuffle input → reorder output → compare with original.
+**Permutation test supports this empirically**: shuffle input → reorder output → compare with original.
 - No PE: difference ~1e-6 (equivariant, as expected)
 - Sinusoidal PE: difference ~0.7 (position-dependent)
 - Learnable PE: difference ~0.1 (weaker, needs training time)
-
-## What "Outputs" We Compare
-
-- **Task outputs**: anomaly score (reconstruction MSE) and derived metrics (Precision/Recall/F1/AUC-ROC).
-- **Mechanistic outputs**: attention weight patterns and a permutation test score that quantifies position dependence.
-
 
 ---
 
@@ -61,7 +59,11 @@ With PE added before the Q, K, V projections:
 
 Sinusoidal PE achieves the best F1 (0.345) and precision/recall, followed by Learnable PE (0.315), then No PE (0.296). The ~16% relative F1 improvement from sinusoidal PE is consistent across all 3 runs with different seeds. AUC-ROC is similar across models (~0.67–0.68), while F1/precision/recall improve with PE. This suggests PE improves **score separation around a practical decision threshold** (cleaner normal vs anomaly distributions), but the **global ranking** of points changes less—so AUC moves only slightly.
 
-> F1 threshold: 95th percentile of anomaly scores (matching the 5% anomaly ratio).
+Even without PE, performance is still non-trivial because ~40% of anomalies are point (20%) or collective (20%) and can be detected from value/shape cues. PE mainly boosts performance on the remaining ~60% contextual anomalies that require knowing *where* a value occurs in the sequence.
+
+> Thresholding: I used a fixed 95th-percentile threshold (matching the ~5% anomaly ratio) to keep the comparison controlled across variants.  
+> If we instead tune the threshold on a validation split, the absolute F1 values change, but the main conclusion remains the same: positional encoding consistently improves separation and yields higher F1 than no PE.
+
 
 
 ### Detailed Metrics (3 runs)
@@ -99,13 +101,13 @@ Three distinct regimes:
 
 ![Attention Comparison](results/run_seed42/visualizations/attention_comparison.png)
 
-The attention heatmaps (first layer, first head) reveal how each model processes position:
+The attention heatmaps (first layer, first head) provide a qualitative illustration of how each model uses (or fails to use) positional information:
 
-**Sinusoidal PE (left)**: Complex structured patterns with diagonal bands. The model learns to attend to specific relative positions - visible periodic structure suggests it captures the seasonal patterns in the data. Attention weights are distributed across many positions.
+**Sinusoidal PE (left)**: Complex structured patterns with diagonal bands. The model appears to attend to specific relative positions; the structured bands suggest it is capturing lagged/periodic dependencies rather than treating all positions as interchangeable. Attention weights are distributed across many positions.
 
 **Learnable PE (middle)**: Similar structure but noisier. The learned position embeddings haven't fully converged to optimal values in 30 epochs. Some periodic patterns are emerging but less pronounced.
 
-**No PE (right)**: Nearly uniform attention (~0.01 everywhere) with one prominent vertical stripe. Without position information, the model cannot distinguish positions and defaults to attending everywhere equally. The vertical stripe (around key position 60-70) indicates pure content-based attention—all queries attend to the same outlier value, regardless of their own positions.
+**No PE (right)**: Nearly uniform attention (~0.01 everywhere) with one prominent vertical stripe. Without position information, the model cannot distinguish positions and tends to rely on content-only cues, often producing more position-agnostic attention. The vertical stripe suggests many queries focus on the same token/content feature regardless of their own positions.
 
 ### Positional Encoding Visualization
 
@@ -115,7 +117,11 @@ The sinusoidal PE structure explains why it works:
 
 **Heatmap (top)**: Each row is a dimension, each column is a position. Lower dimensions (top rows) oscillate rapidly - they encode fine position differences. Higher dimensions oscillate slowly - they encode coarse position differences. Together, every position has a unique fingerprint.
 
-**Dimension curves (bottom-left)**: Shows how individual dimensions vary with position. dim 0,1 have period ~6, dim 10,11 have period ~40, dim 30,31 have very long periods. This multi-scale encoding lets the model represent both local and global position relationships.
+**Dimension curves (bottom-left)**: Shows how individual dimensions vary with position. 
+Lower-indexed dimensions (dim 0,1) oscillate rapidly with short periods, 
+middle dimensions (dim 10,11) have intermediate periods, 
+and higher dimensions (dim 30,31) oscillate very slowly. 
+This multi-scale encoding lets the model represent both local and global position relationships.
 
 **Cosine similarity (bottom-right)**: Positions close together have high similarity (yellow diagonal), positions far apart have low similarity (blue). The smooth gradient means the model can generalize - it learns "nearby positions are similar" without memorizing each position separately.
 
@@ -147,13 +153,13 @@ Reconstruction MSE distributions for normal (blue) vs anomaly (red) points:
 
 The following hyperparameters determine how effectively PE breaks permutation symmetry:
 
-- **d_model=64**: Sinusoidal PE uses multiple frequencies across dimensions. The fastest component changes with period ~`2π ≈ 6.28` steps, while the slowest varies much more slowly (for `d_model=64`, the slowest pair corresponds roughly to a scale `10000^(62/64) ≈ 7.5e3`, i.e., period ~`2π·7.5e3 ≈ 4.7e4` steps). This **multi-scale** signal gives each position a distinct signature. For our `window_size=100`, PE changes smoothly but distinctly across the window.
+- **d_model=64**: Sinusoidal PE uses multiple frequencies across dimensions. The fastest component changes with period ~`2π ≈ 6.28` steps, while the slowest varies much more slowly (for `d_model=64`, the slowest pair corresponds roughly to a scale `10000^(62/64) ≈ 7.5e3`, i.e., period ~`2π·7.5e3 ≈ 4.7e4` steps). This **multi-scale** signal gives each position a distinct signature. For our `window_size=100`, higher-frequency dimensions vary clearly within the window while lower-frequency dimensions change only slightly; together the multi-scale components still make positions distinguishable.
 
-- **n_heads=4**: Each attention head can specialize in different position-dependent patterns. For example, one head might learn to attend to the immediate previous position (local context), while another learns to attend to positions 24 steps back (daily patterns in hourly data). More heads = more diverse position relationships.
+- **n_heads=4**: Each attention head can specialize in different position-dependent patterns. For example, one head might focus on short-range local context, while another specializes in longer-range or periodic offsets (i.e., specific relative lags). More heads = more diverse position relationships.
 
 - **n_layers=2**: Stacking transformer layers lets the model combine position info with value info iteratively. Layer 1 might learn "attend to nearby positions", layer 2 can then learn "combine local patterns into global patterns". Deeper models can capture more complex position-dependent hierarchies.
 
-- **window_size=100**: The sequence length fed to the model. PE must distinguish 100 positions. With d_model=64, the lowest frequency dimension has period >> 100, so even the slowest-varying PE component changes significantly across the window.
+- **window_size=100**: The sequence length fed to the model. PE must distinguish 100 positions. With `d_model=64`, the lowest-frequency dimensions have periods far larger than 100 (so they change only slightly within the window), while higher-frequency dimensions change noticeably; the combination across dimensions gives each position a unique multi-scale signature.
 
 ### Why Sinusoidal PE Shows the Strongest Effect
 
@@ -200,22 +206,37 @@ python run_experiment.py --model_seed 123   # custom seed
 Results saved to `results/run_seed{N}/`.
 
 ## Structure
-
 ```
-run_experiment.py           # entry point
-models/
-    positional_encoding.py  # sinusoidal, learnable, none
-    self_attention.py       # scaled dot-product, multi-head
-    anomaly_detector.py     # autoencoder
-data/
-    synthetic_data.py       # seasonal patterns + anomaly injection
-experiments/
-    train.py, evaluate.py, visualize.py
-results/run_seed{N}/        # outputs per run
-    config.json
-    training_history.json
-    evaluation_results.json
-    visualizations/*.png
+├── run_experiment.py          # Entry point
+├── requirements.txt
+├── README.md
+│
+├── models/
+│   ├── positional_encoding.py # Sinusoidal, Learnable, None
+│   ├── self_attention.py      # Scaled dot-product, multi-head
+│   └── anomaly_detector.py    # Transformer autoencoder
+│
+├── data/
+│   └── synthetic_data.py      # Seasonal patterns + anomaly injection
+│
+├── experiments/
+│   ├── train.py
+│   ├── evaluate.py
+│   └── visualize.py
+│
+└── results/
+    ├── run_seed42/
+    ├── run_seed123/
+    └── run_seed456/
+        ├── config.json
+        ├── training_history.json
+        ├── evaluation_results.json
+        └── visualizations/
+            ├── metrics_comparison.png
+            ├── attention_comparison.png
+            ├── positional_encoding.png
+            ├── training_curves.png
+            └── score_distribution.png
 ```
 
 ## References
